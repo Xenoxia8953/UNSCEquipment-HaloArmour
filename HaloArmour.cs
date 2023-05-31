@@ -116,6 +116,7 @@ namespace HaloArmour
             // Register the SettingChanged event
             applyChangesConfig.SettingChanged += OnApplyChangesSettingChanged;
 
+            SceneManager.sceneLoaded += OnSceneLoaded;
             SceneManager.sceneUnloaded += OnSceneUnloaded;
         }
 
@@ -141,7 +142,7 @@ namespace HaloArmour
                     if (Player != null)
                     {
                         Profile = Player.Profile;
-                        if (PlayerBody == null)
+                        if (PlayerBody == null && Profile != null)
                         {
                             if (Profile.Customization.TryGetValue(EBodyModelPart.Body, out string playerBody))
                             {
@@ -149,7 +150,7 @@ namespace HaloArmour
                                 //logger.LogInfo("Ready" + PlayerBody);
                             }
                         }
-                        if (PlayerLegs == null)
+                        if (PlayerLegs == null && Profile != null)
                         {
                             if (Profile.Customization.TryGetValue(EBodyModelPart.Feet, out string playerLegs))
                             {
@@ -161,91 +162,97 @@ namespace HaloArmour
                     //logger.LogInfo("Checking if body or legs contain 'colourable'");
                     //logger.LogInfo(PlayerBody);
                     //logger.LogInfo(PlayerLegs);
-                    if ((PlayerBody.ToLower().Contains("bodysuit") && PlayerLegs.ToLower().Contains("bodysuit")) || (PlayerBody.ToLower().Contains("undersuit") && PlayerLegs.ToLower().Contains("undersuit")))
+                    if (Player != null)
                     {
-                        GameObject gamePlayerObject = Player.gameObject;
-                        if (gamePlayerObject.GetComponent<HaloShield>() == null && shieldEnabledConfig.Value)
+                        if (PlayerBody != null && PlayerLegs != null)
                         {
-                            HaloShield haloShield = gamePlayerObject.AddComponent<HaloShield>();
-                        }
-                        if (gamePlayerObject.GetComponent<HaloRadar>() == null && shieldEnabledConfig.Value)
-                        {
-                            HaloRadar haloRadar = gamePlayerObject.AddComponent<HaloRadar>();
-                        }
-                    }
-                    if (PlayerBody.ToLower().Contains("body_colourable") && PlayerLegs.ToLower().Contains("legs_colourable"))
-                    {
-                        //logger.LogInfo("Body or legs does contain 'colourable'");
-                        if (Player != null)
-                        {
-                            if (colouringRanTimes <= colouringRanTimesMaxIterations)
+                            if ((PlayerBody.ToLower().Contains("bodysuit") && PlayerLegs.ToLower().Contains("bodysuit")) || (PlayerBody.ToLower().Contains("undersuit") && PlayerLegs.ToLower().Contains("undersuit")))
                             {
-                                if (cachedRenderers == null && Player.gameObject != null)
+                                GameObject gamePlayerObject = Player.gameObject;
+                                if (gamePlayerObject.GetComponent<HaloShield>() == null && shieldEnabledConfig.Value)
                                 {
-                                    GameObject gamePlayerObject = Player.gameObject;
-                                    GameObject playerMeshObject = gamePlayerObject.transform.Find("Player").gameObject;
-                                    if (playerMeshObject != null)
-                                    {
-                                        //logger.LogInfo($"Found player mesh object '{playerMeshObject}'");
-                                        cachedRenderers = playerMeshObject.GetComponentsInChildren<Renderer>(includeInactive: true)
-                                        .Where(renderer => renderer.GetComponent<HaloShield>() == null)
-                                        .ToArray();
-                                        //EFT.UI.ConsoleScreen.LogError($"CachedRenderers '{cachedRenderers}'");
-                                    }
+                                    HaloShield haloShield = gamePlayerObject.AddComponent<HaloShield>();
                                 }
-                                if (cachedRenderers != null)
+                                if (gamePlayerObject.GetComponent<HaloRadar>() == null && shieldEnabledConfig.Value)
                                 {
-                                    foreach (Renderer renderer in cachedRenderers)
+                                    HaloRadar haloRadar = gamePlayerObject.AddComponent<HaloRadar>();
+                                }
+                            }
+                            if (PlayerBody.ToLower().Contains("body_colourable") && PlayerLegs.ToLower().Contains("legs_colourable"))
+                            {
+                                //logger.LogInfo("Body or legs does contain 'colourable'");
+                                if (Player != null)
+                                {
+                                    if (colouringRanTimes <= colouringRanTimesMaxIterations)
                                     {
-                                        //logger.LogInfo($"Found outfit type '{outfitType}'");
-                                        if (renderer != null && renderer.sharedMaterials != null)
+                                        if (cachedRenderers == null && Player.gameObject != null)
                                         {
-                                            materials = renderer.sharedMaterials;
-                                            if (materials != null)
+                                            GameObject gamePlayerObject = Player.gameObject;
+                                            GameObject playerMeshObject = gamePlayerObject.transform.Find("Player").gameObject;
+                                            if (playerMeshObject != null)
                                             {
-                                                foreach (Material material in materials)
+                                                //logger.LogInfo($"Found player mesh object '{playerMeshObject}'");
+                                                cachedRenderers = playerMeshObject.GetComponentsInChildren<Renderer>(includeInactive: true)
+                                                .Where(renderer => renderer.GetComponent<HaloShield>() == null)
+                                                .ToArray();
+                                                //EFT.UI.ConsoleScreen.LogError($"CachedRenderers '{cachedRenderers}'");
+                                            }
+                                        }
+                                        if (cachedRenderers != null)
+                                        {
+                                            foreach (Renderer renderer in cachedRenderers)
+                                            {
+                                                //logger.LogInfo($"Found outfit type '{outfitType}'");
+                                                if (renderer != null && renderer.sharedMaterials != null)
                                                 {
-                                                    if (material != null)
+                                                    materials = renderer.sharedMaterials;
+                                                    if (materials != null)
                                                     {
-                                                        if (!objectsMaterials.ContainsKey(Player.gameObject))
+                                                        foreach (Material material in materials)
                                                         {
-                                                            objectsMaterials[Player.gameObject] = new HashSet<Material>();
-                                                        }
+                                                            if (material != null)
+                                                            {
+                                                                if (!objectsMaterials.ContainsKey(Player.gameObject))
+                                                                {
+                                                                    objectsMaterials[Player.gameObject] = new HashSet<Material>();
+                                                                }
 
-                                                        objectsMaterials[Player.gameObject].Add(material);
+                                                                objectsMaterials[Player.gameObject].Add(material);
 
-                                                        (GameObject, Material) key = (Player.gameObject, material);
-                                                        string outfitType = GetOutfitType(renderer.name);
-                                                        if (materialColorConfigs.ContainsKey(key))
-                                                        {
-                                                            if (material.name == "spartan_shield_display_colourable")
-                                                            {
-                                                                ConfigEntry<Color> materialConfig = materialColorConfigs[key];
-                                                                material.SetColor("_EmissionColor", materialConfig.Value);
+                                                                (GameObject, Material) key = (Player.gameObject, material);
+                                                                string outfitType = GetOutfitType(renderer.name);
+                                                                if (materialColorConfigs.ContainsKey(key))
+                                                                {
+                                                                    if (material.name == "spartan_shield_display_colourable")
+                                                                    {
+                                                                        ConfigEntry<Color> materialConfig = materialColorConfigs[key];
+                                                                        material.SetColor("_EmissionColor", materialConfig.Value);
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        ConfigEntry<Color> materialConfig = materialColorConfigs[key];
+                                                                        material.SetColor("_Color", materialConfig.Value);
+                                                                    }
+                                                                    ++colouringRanTimes;
+                                                                }
+                                                                else if (outfitType != null)
+                                                                {
+                                                                    string configName = $"{outfitType} {PrettifyText(material.name)}";
+                                                                    if (material.name == "spartan_shield_display_colourable")
+                                                                    {
+                                                                        ConfigEntry<Color> materialConfig = Config.Bind("C - Material Settings", configName, Color.white, $"Color for material '{PrettifyText(material.name)}' of object '{outfitType}'");
+                                                                        materialColorConfigs[key] = materialConfig;
+                                                                        material.SetColor("_EmissionColor", materialConfig.Value);
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        ConfigEntry<Color> materialConfig = Config.Bind("C - Material Settings", configName, Color.white, $"Color for material '{PrettifyText(material.name)}' of object '{outfitType}'");
+                                                                        materialColorConfigs[key] = materialConfig;
+                                                                        material.SetColor("_Color", materialConfig.Value);
+                                                                    }
+                                                                    ++colouringRanTimes;
+                                                                }
                                                             }
-                                                            else
-                                                            {
-                                                                ConfigEntry<Color> materialConfig = materialColorConfigs[key];
-                                                                material.SetColor("_Color", materialConfig.Value);
-                                                            }
-                                                            ++colouringRanTimes;
-                                                        }
-                                                        else if (outfitType != null)
-                                                        {
-                                                            string configName = $"{outfitType} {PrettifyText(material.name)}";
-                                                            if (material.name == "spartan_shield_display_colourable")
-                                                            {
-                                                                ConfigEntry<Color> materialConfig = Config.Bind("C - Material Settings", configName, Color.white, $"Color for material '{PrettifyText(material.name)}' of object '{outfitType}'");
-                                                                materialColorConfigs[key] = materialConfig;
-                                                                material.SetColor("_EmissionColor", materialConfig.Value);
-                                                            }
-                                                            else
-                                                            {
-                                                                ConfigEntry<Color> materialConfig = Config.Bind("C - Material Settings", configName, Color.white, $"Color for material '{PrettifyText(material.name)}' of object '{outfitType}'");
-                                                                materialColorConfigs[key] = materialConfig;
-                                                                material.SetColor("_Color", materialConfig.Value);
-                                                            }
-                                                            ++colouringRanTimes;
                                                         }
                                                     }
                                                 }
@@ -259,9 +266,38 @@ namespace HaloArmour
                 }
             }
         }
+        private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            colouringRanTimes = 0;
+            StartCoroutine(ApplyChangesWithDelay());
+            if (Profile != null)
+            {
+                if (Profile.Skills.StrengthBuffMeleePowerInc.Value != HaloShield.userJumpSkill)
+                {
+                    Profile.Skills.StrengthBuffMeleePowerInc.Value = HaloShield.userJumpSkill;
+                }
+                if (Profile.Skills.EnduranceBuffEnduranceInc.Value != HaloShield.userEnduranceSkill)
+                {
+                    Profile.Skills.EnduranceBuffEnduranceInc.Value = HaloShield.userEnduranceSkill;
+                }
+                if (Profile.Skills.EnduranceBuffRestoration.Value != HaloShield.userEnduranceRegenerationSkill)
+                {
+                    Profile.Skills.EnduranceBuffRestoration.Value = HaloShield.userEnduranceRegenerationSkill;
+                }
+                if (Profile.Skills.StrengthBuffSprintSpeedInc.Value != HaloShield.userSprintSkill)
+                {
+                    Profile.Skills.StrengthBuffSprintSpeedInc.Value = HaloShield.userSprintSkill;
+                }
+                PlayerBody = null;
+                PlayerLegs = null;
+                HaloShield.PlayerBody = null;
+                HaloShield.PlayerLegs = null;
+            }
+        }
         private void OnSceneUnloaded(Scene scene)
         {
             colouringRanTimes = 0;
+            StartCoroutine(ApplyChangesWithDelay());
             if (Profile != null)
             {
                 if (Profile.Skills.StrengthBuffMeleePowerInc.Value != HaloShield.userJumpSkill)
@@ -516,7 +552,7 @@ namespace HaloArmour
         }
         private void Update()
         {
-            if (MapLoaded() && HaloArmourRecolour.shieldEnabledConfig.Value)
+            if (MapLoaded())
             {
                 gameWorld = Singleton<GameWorld>.Instance;
                 if (gameWorld.MainPlayer != null)
@@ -529,7 +565,7 @@ namespace HaloArmour
                     skills = player.Skills;
                     profile = player.Profile;
                     weapon = player.ProceduralWeaponAnimation;
-                    if (PlayerBody == null)
+                    if (PlayerBody == null && profile != null)
                     {
                         if (profile.Customization.TryGetValue(EBodyModelPart.Body, out string playerBody))
                         {
@@ -537,7 +573,7 @@ namespace HaloArmour
                             //EFT.UI.ConsoleScreen.LogError($"Player Body is: " + PlayerBody);
                         }
                     }
-                    if (PlayerLegs == null)
+                    if (PlayerLegs == null && profile != null)
                     {
                         if (profile.Customization.TryGetValue(EBodyModelPart.Feet, out string playerLegs))
                         {
@@ -978,7 +1014,7 @@ namespace HaloArmour
 
         private void Update()
         {
-            if (MapLoaded() && HaloArmourRecolour.radarEnabledConfig.Value)
+            if (MapLoaded())
             {
                 gameWorld = Singleton<GameWorld>.Instance;
                 if (gameWorld.MainPlayer != null)
