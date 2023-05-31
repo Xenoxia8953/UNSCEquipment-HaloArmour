@@ -141,29 +141,29 @@ namespace HaloArmour
                     Player = gameWorld.MainPlayer;
                     if (Player != null)
                     {
-                        Profile = Player.Profile;
-                        if (PlayerBody == null && Profile != null)
+                        if (PlayerLegs == null && PlayerBody == null)
                         {
-                            if (Profile.Customization.TryGetValue(EBodyModelPart.Body, out string playerBody))
+                            Renderer[] renderers = gameWorld.MainPlayer.GetComponentsInChildren<Renderer>();
+                            foreach (Renderer renderer in renderers)
                             {
-                                PlayerBody = playerBody;
-                                //logger.LogInfo("Ready" + PlayerBody);
+                                string componentName = renderer.gameObject.name.ToLower();
+                                if (componentName.Contains("legs"))
+                                {
+                                    PlayerLegs = componentName;
+                                    //EFT.UI.ConsoleScreen.LogError("Player Legs Found" + PlayerLegs);
+                                }
+                                else if (componentName.Contains("body"))
+                                {
+                                    PlayerBody = componentName;
+                                    //EFT.UI.ConsoleScreen.LogError("Player Body Found" + PlayerBody);
+                                }
+                                else if (componentName.Contains("arms"))
+                                {
+                                    PlayerBody = componentName;
+                                    //EFT.UI.ConsoleScreen.LogError("Player Body Found" + PlayerBody);
+                                }
                             }
                         }
-                        if (PlayerLegs == null && Profile != null)
-                        {
-                            if (Profile.Customization.TryGetValue(EBodyModelPart.Feet, out string playerLegs))
-                            {
-                                PlayerLegs = playerLegs;
-                                //logger.LogInfo("Ready" + PlayerLegs);
-                            }
-                        }
-                    }
-                    //logger.LogInfo("Checking if body or legs contain 'colourable'");
-                    //logger.LogInfo(PlayerBody);
-                    //logger.LogInfo(PlayerLegs);
-                    if (Player != null)
-                    {
                         if (PlayerBody != null && PlayerLegs != null)
                         {
                             if ((PlayerBody.ToLower().Contains("bodysuit") && PlayerLegs.ToLower().Contains("bodysuit")) || (PlayerBody.ToLower().Contains("undersuit") && PlayerLegs.ToLower().Contains("undersuit")))
@@ -176,6 +176,20 @@ namespace HaloArmour
                                 if (gamePlayerObject.GetComponent<HaloRadar>() == null && shieldEnabledConfig.Value)
                                 {
                                     HaloRadar haloRadar = gamePlayerObject.AddComponent<HaloRadar>();
+                                }
+                            }
+                            else
+                            {
+                                GameObject gamePlayerObject = Player.gameObject;
+                                HaloShield haloShield = gamePlayerObject.GetComponent<HaloShield>();
+                                if (haloShield != null)
+                                {
+                                    Destroy(haloShield);
+                                }
+                                HaloRadar haloRadar = gamePlayerObject.GetComponent<HaloRadar>();
+                                if (haloRadar != null)
+                                {
+                                    Destroy(haloRadar);
                                 }
                             }
                             if (PlayerBody.ToLower().Contains("body_colourable") && PlayerLegs.ToLower().Contains("legs_colourable"))
@@ -290,8 +304,6 @@ namespace HaloArmour
                 }
                 PlayerBody = null;
                 PlayerLegs = null;
-                HaloShield.PlayerBody = null;
-                HaloShield.PlayerLegs = null;
             }
         }
         private void OnSceneUnloaded(Scene scene)
@@ -318,8 +330,6 @@ namespace HaloArmour
                 }
                 PlayerBody = null;
                 PlayerLegs = null;
-                HaloShield.PlayerBody = null;
-                HaloShield.PlayerLegs = null;
             }
         }
         private IEnumerator ApplyChangesWithDelay()
@@ -516,8 +526,6 @@ namespace HaloArmour
         public static RectTransform shieldBarEdges { get; private set; }
         public static float shieldRechargeWaitTime = HaloArmourRecolour.shieldRechargeWaitTimeConfig.Value;
         public static float shieldRechargeDurationTime = HaloArmourRecolour.shieldRechargeTimeConfig.Value;
-        public static string PlayerBody = null;
-        public static string PlayerLegs = null;
         public static float userJumpSkill = 0f;
         public static float userEnduranceSkill = 0f;
         public static float userEnduranceRegenerationSkill = 0f;
@@ -563,27 +571,7 @@ namespace HaloArmour
                 {
                     health = player.ActiveHealthController;
                     skills = player.Skills;
-                    profile = player.Profile;
                     weapon = player.ProceduralWeaponAnimation;
-                    if (PlayerBody == null && profile != null)
-                    {
-                        if (profile.Customization.TryGetValue(EBodyModelPart.Body, out string playerBody))
-                        {
-                            PlayerBody = playerBody;
-                            //EFT.UI.ConsoleScreen.LogError($"Player Body is: " + PlayerBody);
-                        }
-                    }
-                    if (PlayerLegs == null && profile != null)
-                    {
-                        if (profile.Customization.TryGetValue(EBodyModelPart.Feet, out string playerLegs))
-                        {
-                            PlayerLegs = playerLegs;
-                            //EFT.UI.ConsoleScreen.LogError($"Player Legs is: " + PlayerLegs);
-                        }
-                    }
-                }
-                if (player != null)
-                {
                     if (skills != null)
                     {
                         if (userJumpSkill == 0f && userEnduranceSkill == 0f && userEnduranceRegenerationSkill == 0f && userSprintSkill == 0f && defaultCharacterSpeed == 0f)
@@ -595,10 +583,6 @@ namespace HaloArmour
                             defaultCharacterSpeed = skills.StrengthBuffSprintSpeedInc.Value;
                         }
                     }
-                    if (PlayerBody != null && PlayerLegs != null)
-                    {
-                        if ((PlayerBody.ToLower().Contains("bodysuit") && PlayerLegs.ToLower().Contains("bodysuit")) || (PlayerBody.ToLower().Contains("undersuit") && PlayerLegs.ToLower().Contains("undersuit")))
-                        {
                             if (playerMaxHealth == 0f && health != null)
                             {
                                 var HeadMaxHP = health.GetBodyPartHealth(EBodyPart.Head, true).Maximum;
@@ -903,8 +887,6 @@ namespace HaloArmour
                                 }
                                 playerHealthChanged = false;
                             }
-                        }
-                    }
                 }
             }
         }
