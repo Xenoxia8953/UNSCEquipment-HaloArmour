@@ -1,4 +1,5 @@
 ﻿using EFT;
+using EFT.Interactive;
 using System;
 using System.IO;
 using System.Linq;
@@ -20,15 +21,17 @@ using Aki.Reflection.Patching;
 namespace HaloArmour
 {
     [BepInPlugin("Tyrian.HaloArmour", "HaloArmour", "1.0.0")]
-    public class HaloArmourRecolour : BaseUnityPlugin
+    public class HaloArmour : BaseUnityPlugin
     {
         private static GameWorld gameWorld;
         public static bool MapLoaded() => Singleton<GameWorld>.Instantiated;
         public static Player Player;
-        public static Profile Profile;
-        public static HaloArmourRecolour instance; // Singleton instance
+        public static HaloArmour instance;
         public static Dictionary<GameObject, HashSet<Material>> objectsMaterials = new Dictionary<GameObject, HashSet<Material>>();
         public static ConfigEntry<bool> applyChangesConfig;
+        public static bool applyChanges = false;
+        public static ConfigEntry<bool> clearErrantClonesConfig;
+        public static bool clearClonesChanges = false;
         public static ConfigEntry<bool> shieldEnabledConfig;
         public static ConfigEntry<int> maxShieldConfig;
         public static ConfigEntry<float> shieldRechargeTimeConfig;
@@ -43,6 +46,7 @@ namespace HaloArmour
         public static ConfigEntry<float> jumpBuffMultiplierConfig;
         public static ConfigEntry<bool> recoilChangesConfig;
         public static ConfigEntry<float> recoilBuffMultiplierConfig;
+        public static ConfigEntry<bool> doorKickerEnabledConfig;
         public static ConfigEntry<bool> radarEnabledConfig;
         public static ConfigEntry<float> radarScaleOffsetConfig;
         public static ConfigEntry<float> radarOffsetYConfig;
@@ -50,21 +54,23 @@ namespace HaloArmour
         public static ConfigEntry<float> shieldScaleOffsetConfig;
         public static ConfigEntry<float> shieldOffsetYConfig;
         public static ConfigEntry<float> shieldOffsetXConfig;
-        public static bool applyChanges = true; // Flag to control applying changes
         public static ManualLogSource logger;
         public static Renderer[] cachedRenderers;
         public static Material[] materials;
         public static Dictionary<(GameObject, Material), ConfigEntry<Color>> materialColorConfigs = new Dictionary<(GameObject, Material), ConfigEntry<Color>>();
         public static bool isTimerRunning = false;
-        public static float delayDuration = 1.0f; // Delay duration in seconds
+        public static float delayDuration = 1.0f;
         public static bool sceneLoaded = false;
         public static int colouringRanTimes = 0;
         public static int colouringRanTimesMaxIterations = 64;
-        private bool iscolouringCoroutineRunning = false;
         public static string PlayerBody = null;
         public static string PlayerLegs = null;
+        public static string PlayerHelmet = null;
+        public static bool patchesEnabled = false;
+        public static bool HudsEnabled = false;
+        public static float playerHeight = 0f;
 
-        public static HaloArmourRecolour Instance
+        public static HaloArmour Instance
         {
             get { return instance; }
         }
@@ -72,6 +78,10 @@ namespace HaloArmour
         private void Start()
         {
             new VoiceAdd.VoicePatch().Enable();
+            new ShieldPatch().Enable();
+            new DeadPatch().Enable();
+            new HealPatch().Enable();
+            new DoorKickPatch().Enable();
         }
 
         private void Awake()
@@ -111,11 +121,16 @@ namespace HaloArmour
             recoilBuffMultiplierConfig = Config.Bind<float>("B - Undersuit Settings", "Weapon Recoil Reduction Multiplier", 0.8f, new ConfigDescription("Multiplies the amount of recoil that weapons have by this value, lower values = less recoil.", new AcceptableValueRange<float>(0.01f, 1f)));
             undersuitArmourConfig = Config.Bind("B - Undersuit Settings", "Undersuit Armour", true, "Undersuit natively reduces damage for being worn, as if it were a piece of armour.");
             undersuitArmourReductionConfig = Config.Bind<float>("B - Undersuit Settings", "Undersuit Armour Damage Reduction Multiplier", 0.75f, new ConfigDescription("Multiplies the amount of damage received by this value, lower values = less damage taken.", new AcceptableValueRange<float>(0.01f, 1f)));
-            applyChangesConfig = Config.Bind("C - Material Settings", "Enabled & Toggle For Forced Colour Refresh", true, "Recolouring setting enabled. When enabled, list will populate with colourable halo armour textures.");
+            doorKickerEnabledConfig = Config.Bind("B - Undersuit Settings", "Brute Force Doors Open w/ Kicks", true, "Want to smash open a door with your kicks? Enable this.");
+            applyChangesConfig = Config.Bind("C - Material Settings", "Enabled & Toggle For Forced Colour Refresh", false, "Recolouring setting enabled. When enabled, list will populate with colourable halo armour textures.");
             applyChanges = applyChangesConfig.Value;
+            clearErrantClonesConfig = Config.Bind("C - Material Settings", "Enabled & Toggle To Clear Colourable Object Clones", false, "Use this in the outfit or character view screen to clear clones of colourable helmets, this will clear the clone to allow for recolouring.");
+            clearClonesChanges = clearErrantClonesConfig.Value;
 
             // Register the SettingChanged event
             applyChangesConfig.SettingChanged += OnApplyChangesSettingChanged;
+            // Register the SettingChanged event
+            clearErrantClonesConfig.SettingChanged += OnClearClonesSettingChanged;
 
             SceneManager.sceneLoaded += OnSceneLoaded;
             SceneManager.sceneUnloaded += OnSceneUnloaded;
@@ -125,9 +140,35 @@ namespace HaloArmour
         {
             applyChanges = applyChangesConfig.Value;
             colouringRanTimes = 0;
-            if (applyChanges && !iscolouringCoroutineRunning && colouringRanTimes <= colouringRanTimesMaxIterations)
+            if (applyChanges && colouringRanTimes <= colouringRanTimesMaxIterations)
             {
-                StartCoroutine(ApplyChangesWithDelay());
+                SearchAndRecolorObjects();
+            }
+        }
+
+        private void OnClearClonesSettingChanged(object sender, EventArgs e)
+        {
+            clearClonesChanges = clearErrantClonesConfig.Value;
+            GameObject[] currentObjects = GameObject.FindObjectsOfType<GameObject>();
+            if (currentObjects != null)
+            {
+                //EFT.UI.ConsoleScreen.LogError("Number of current objects: " + currentObjects.Length);
+
+                foreach (GameObject obj in currentObjects)
+                {
+                    //EFT.UI.ConsoleScreen.LogError("Processing object: " + obj.name);
+                    if (!objectsMaterials.ContainsKey(obj))
+                    {
+                        //EFT.UI.ConsoleScreen.LogError("Trying to get outfit type: " + obj.name);
+                        if (obj.name != null)
+                        {
+                            if (obj.name.ToLower().StartsWith("helmet") && obj.name.ToLower().EndsWith("colourable(clone)"))
+                            {
+                                Destroy(obj);
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -147,37 +188,62 @@ namespace HaloArmour
             if (PlayerLegs == null && PlayerBody == null)
             {
                 Renderer[] renderers = Player.GetComponentsInChildren<Renderer>();
+                float minBoundsY = float.MaxValue;
+                float maxBoundsY = float.MinValue;
+                foreach (Renderer renderer in renderers)
+                {
+                    Bounds bounds = renderer.bounds;
+                    if (bounds.min.y < minBoundsY)
+                        minBoundsY = bounds.min.y;
+                    if (bounds.max.y > maxBoundsY)
+                        maxBoundsY = bounds.max.y;
+                }
+                playerHeight = maxBoundsY - minBoundsY;
                 foreach (Renderer renderer in renderers)
                 {
                     string componentName = renderer.gameObject.name.ToLower();
-                    if (componentName.Contains("legs"))
+                    if (componentName.Contains("legs") && componentName.Contains("bodysuit"))
                     {
                         PlayerLegs = componentName;
+                        //EFT.UI.ConsoleScreen.LogError("Found Legs: " + PlayerLegs);
                     }
-                    else if (componentName.Contains("body") || componentName.Contains("arms"))
+                    else if (componentName.Contains("body") && componentName.Contains("bodysuit"))
                     {
                         PlayerBody = componentName;
+                        //EFT.UI.ConsoleScreen.LogError("Found Body: " + PlayerBody);
                     }
                 }
             }
 
             if (PlayerBody != null && PlayerLegs != null)
             {
-                if ((PlayerBody.ToLower().Contains("bodysuit") && PlayerLegs.ToLower().Contains("bodysuit")) ||
-                    (PlayerBody.ToLower().Contains("undersuit") && PlayerLegs.ToLower().Contains("undersuit")))
+                if (PlayerLegs.ToLower().Contains("bodysuit") && PlayerBody.ToLower().Contains("bodysuit") && HudsEnabled != true)
                 {
+                    // Enable our patches and objects if wearing the halo bodysuits.
+                    if (patchesEnabled != true)
+                    {
+                        patchesEnabled = true;
+                    }
+                    //EFT.UI.ConsoleScreen.LogError("Found Body & Legs Together: " + PlayerBody + " " + PlayerLegs);
                     GameObject gamePlayerObject = Player.gameObject;
                     if (gamePlayerObject.GetComponent<HaloShield>() == null && shieldEnabledConfig.Value)
                     {
                         HaloShield haloShield = gamePlayerObject.AddComponent<HaloShield>();
                     }
-                    if (gamePlayerObject.GetComponent<HaloRadar>() == null && shieldEnabledConfig.Value)
+                    if (gamePlayerObject.GetComponent<HaloRadar>() == null && radarEnabledConfig.Value)
                     {
                         HaloRadar haloRadar = gamePlayerObject.AddComponent<HaloRadar>();
                     }
+                    HudsEnabled = true;
                 }
-                else
+                else if (PlayerLegs.ToLower().Contains("bodysuit") == false && PlayerBody.ToLower().Contains("bodysuit") == false && HudsEnabled != false)
                 {
+                    EFT.UI.ConsoleScreen.LogError("Body & Legs Not Together: " + PlayerBody + " " + PlayerLegs);
+                    // Disable our patches and objects if not wearing the halo bodysuits.
+                    if (patchesEnabled != false)
+                    {
+                        patchesEnabled = false;
+                    }
                     GameObject gamePlayerObject = Player.gameObject;
                     HaloShield haloShield = gamePlayerObject.GetComponent<HaloShield>();
                     if (haloShield != null)
@@ -189,9 +255,10 @@ namespace HaloArmour
                     {
                         Destroy(haloRadar);
                     }
+                    HudsEnabled = false;
                 }
 
-                if (PlayerBody.ToLower().Contains("body_colourable") && PlayerLegs.ToLower().Contains("legs_colourable"))
+                if (PlayerBody.ToLower().Contains("_colourable") || PlayerLegs.ToLower().Contains("_colourable"))
                 {
                     if (Player != null && colouringRanTimes <= colouringRanTimesMaxIterations)
                     {
@@ -228,13 +295,16 @@ namespace HaloArmour
                                                     ConfigEntry<Color> materialConfig = materialColorConfigs[key];
                                                     if (material.name == "spartan_shield_display_colourable")
                                                     {
+                                                        material.SetColor("_EmissionColor", Color.white);
                                                         material.SetColor("_EmissionColor", materialConfig.Value);
                                                     }
                                                     else
                                                     {
+                                                        material.SetColor("_Color", Color.white);
                                                         material.SetColor("_Color", materialConfig.Value);
                                                     }
-                                                    ++colouringRanTimes;
+                                                    renderer.enabled = false;
+                                                    renderer.enabled = true;
                                                 }
                                                 else if (outfitType != null)
                                                 {
@@ -243,13 +313,16 @@ namespace HaloArmour
                                                     materialColorConfigs[key] = materialConfig;
                                                     if (material.name == "spartan_shield_display_colourable")
                                                     {
+                                                        material.SetColor("_EmissionColor", Color.white);
                                                         material.SetColor("_EmissionColor", materialConfig.Value);
                                                     }
                                                     else
                                                     {
+                                                        material.SetColor("_Color", Color.white);
                                                         material.SetColor("_Color", materialConfig.Value);
                                                     }
-                                                    ++colouringRanTimes;
+                                                    renderer.enabled = false;
+                                                    renderer.enabled = true;
                                                 }
                                             }
                                         }
@@ -257,6 +330,7 @@ namespace HaloArmour
                                 }
                             }
                         }
+                        ++colouringRanTimes;
                     }
                 }
             }
@@ -264,78 +338,68 @@ namespace HaloArmour
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
             colouringRanTimes = 0;
-            if (applyChanges && !iscolouringCoroutineRunning && colouringRanTimes <= colouringRanTimesMaxIterations)
+            if (applyChanges && colouringRanTimes <= colouringRanTimesMaxIterations)
             {
-                StartCoroutine(ApplyChangesWithDelay());
+                SearchAndRecolorObjects();
             }
-            if (Profile != null)
+            if (HaloShield.skills != null)
             {
-                if (Profile.Skills.StrengthBuffMeleePowerInc.Value != HaloShield.userJumpSkill)
+                if (HaloShield.skills.StrengthBuffMeleePowerInc != null && HaloShield.skills.StrengthBuffMeleePowerInc.Value != HaloShield.userJumpSkill)
                 {
-                    Profile.Skills.StrengthBuffMeleePowerInc.Value = HaloShield.userJumpSkill;
+                    HaloShield.skills.StrengthBuffMeleePowerInc.Value = HaloShield.userJumpSkill;
                 }
-                if (Profile.Skills.EnduranceBuffEnduranceInc.Value != HaloShield.userEnduranceSkill)
+                if (HaloShield.skills.EnduranceBuffEnduranceInc != null && HaloShield.skills.EnduranceBuffEnduranceInc.Value != HaloShield.userEnduranceSkill)
                 {
-                    Profile.Skills.EnduranceBuffEnduranceInc.Value = HaloShield.userEnduranceSkill;
+                    HaloShield.skills.EnduranceBuffEnduranceInc.Value = HaloShield.userEnduranceSkill;
                 }
-                if (Profile.Skills.EnduranceBuffRestoration.Value != HaloShield.userEnduranceRegenerationSkill)
+                if (HaloShield.skills.EnduranceBuffRestoration != null && HaloShield.skills.EnduranceBuffRestoration.Value != HaloShield.userEnduranceRegenerationSkill)
                 {
-                    Profile.Skills.EnduranceBuffRestoration.Value = HaloShield.userEnduranceRegenerationSkill;
+                    HaloShield.skills.EnduranceBuffRestoration.Value = HaloShield.userEnduranceRegenerationSkill;
                 }
-                if (Profile.Skills.StrengthBuffSprintSpeedInc.Value != HaloShield.userSprintSkill)
+                if (HaloShield.skills.StrengthBuffSprintSpeedInc != null && HaloShield.skills.StrengthBuffSprintSpeedInc.Value != HaloShield.userSprintSkill)
                 {
-                    Profile.Skills.StrengthBuffSprintSpeedInc.Value = HaloShield.userSprintSkill;
+                    HaloShield.skills.StrengthBuffSprintSpeedInc.Value = HaloShield.userSprintSkill;
                 }
-                PlayerBody = null;
-                PlayerLegs = null;
             }
+            PlayerBody = null;
+            PlayerLegs = null;
+            PlayerHelmet = null;
         }
         private void OnSceneUnloaded(Scene scene)
         {
             colouringRanTimes = 0;
-            if (applyChanges && !iscolouringCoroutineRunning && colouringRanTimes <= colouringRanTimesMaxIterations)
+            if (applyChanges && colouringRanTimes <= colouringRanTimesMaxIterations)
             {
-                StartCoroutine(ApplyChangesWithDelay());
+                SearchAndRecolorObjects();
             }
-            if (Profile != null)
+            if (HaloShield.skills != null)
             {
-                if (Profile.Skills.StrengthBuffMeleePowerInc.Value != HaloShield.userJumpSkill)
+                if (HaloShield.skills.StrengthBuffMeleePowerInc != null && HaloShield.skills.StrengthBuffMeleePowerInc.Value != HaloShield.userJumpSkill)
                 {
-                    Profile.Skills.StrengthBuffMeleePowerInc.Value = HaloShield.userJumpSkill;
+                    HaloShield.skills.StrengthBuffMeleePowerInc.Value = HaloShield.userJumpSkill;
                 }
-                if (Profile.Skills.EnduranceBuffEnduranceInc.Value != HaloShield.userEnduranceSkill)
+                if (HaloShield.skills.EnduranceBuffEnduranceInc != null && HaloShield.skills.EnduranceBuffEnduranceInc.Value != HaloShield.userEnduranceSkill)
                 {
-                    Profile.Skills.EnduranceBuffEnduranceInc.Value = HaloShield.userEnduranceSkill;
+                    HaloShield.skills.EnduranceBuffEnduranceInc.Value = HaloShield.userEnduranceSkill;
                 }
-                if (Profile.Skills.EnduranceBuffRestoration.Value != HaloShield.userEnduranceRegenerationSkill)
+                if (HaloShield.skills.EnduranceBuffRestoration != null &&  HaloShield.skills.EnduranceBuffRestoration.Value != HaloShield.userEnduranceRegenerationSkill)
                 {
-                    Profile.Skills.EnduranceBuffRestoration.Value = HaloShield.userEnduranceRegenerationSkill;
+                    HaloShield.skills.EnduranceBuffRestoration.Value = HaloShield.userEnduranceRegenerationSkill;
                 }
-                if (Profile.Skills.StrengthBuffSprintSpeedInc.Value != HaloShield.userSprintSkill)
+                if (HaloShield.skills.StrengthBuffSprintSpeedInc != null &&  HaloShield.skills.StrengthBuffSprintSpeedInc.Value != HaloShield.userSprintSkill)
                 {
-                    Profile.Skills.StrengthBuffSprintSpeedInc.Value = HaloShield.userSprintSkill;
+                    HaloShield.skills.StrengthBuffSprintSpeedInc.Value = HaloShield.userSprintSkill;
                 }
-                PlayerBody = null;
-                PlayerLegs = null;
             }
-        }
-        private IEnumerator ApplyChangesWithDelay()
-        {
-            isTimerRunning = true;
-            iscolouringCoroutineRunning = true;
-
-            yield return new WaitForSeconds(delayDuration);
-
-            SearchAndRecolorObjects();
-
-            isTimerRunning = false;
-            iscolouringCoroutineRunning = false;
+            PlayerBody = null;
+            PlayerLegs = null;
+            PlayerHelmet = null;
         }
 
         private void SearchAndRecolorObjects()
         {
             GameObject[] currentObjects = GameObject.FindObjectsOfType<GameObject>();
-            if (currentObjects != null)
+            if (currentObjects != null && colouringRanTimes <= colouringRanTimesMaxIterations)
             {
                 //EFT.UI.ConsoleScreen.LogError("Number of current objects: " + currentObjects.Length);
 
@@ -347,14 +411,16 @@ namespace HaloArmour
                         //EFT.UI.ConsoleScreen.LogError("Trying to get outfit type: " + obj.name);
                         if (obj.name != null)
                         {
-                            if (obj.name.ToLower().EndsWith("colourable") && obj.name.ToLower().StartsWith("outfit"))
+                            if (obj.name.ToLower().EndsWith("colourable"))
                             {
                                 string outfitType = GetOutfitType(obj.name);
                                 //EFT.UI.ConsoleScreen.LogError("Colourable object: " + obj.name);
                                 cachedRenderers = obj.GetComponentsInChildren<Renderer>(includeInactive: true)
                                     .Where(renderer => renderer.GetComponent<HaloShield>() == null)
                                     .ToArray();
-                                if (cachedRenderers != null && colouringRanTimes <= colouringRanTimesMaxIterations)
+                                bool wasActive = obj.activeSelf;
+                                obj.SetActive(true);
+                                if (cachedRenderers != null)
                                 {
                                     //EFT.UI.ConsoleScreen.LogError("Number of cached renderers: " + cachedRenderers.Length);
 
@@ -386,32 +452,38 @@ namespace HaloArmour
                                                         {
                                                             if (material.name == "spartan_shield_display_colourable")
                                                             {
+                                                                material.SetColor("_EmissionColor", Color.white);
                                                                 ConfigEntry<Color> materialConfig = materialColorConfigs[key];
                                                                 material.SetColor("_EmissionColor", materialConfig.Value);
                                                             }
                                                             else
                                                             {
+                                                                material.SetColor("_Color", Color.white);
                                                                 ConfigEntry<Color> materialConfig = materialColorConfigs[key];
                                                                 material.SetColor("_Color", materialConfig.Value);
                                                             }
-                                                            ++colouringRanTimes;
+                                                            renderer.enabled = false;
+                                                            renderer.enabled = true;
                                                         }
                                                         else if (outfitType != null)
                                                         {
                                                             string configName = $"{outfitType} {PrettifyText(material.name)}";
                                                             if (material.name == "spartan_shield_display_colourable")
                                                             {
+                                                                material.SetColor("_EmissionColor", Color.white);
                                                                 ConfigEntry<Color> materialConfig = Config.Bind("C - Material Settings", configName, Color.white, $"Color for material '{PrettifyText(material.name)}' of object '{outfitType}'");
                                                                 materialColorConfigs[key] = materialConfig;
                                                                 material.SetColor("_EmissionColor", materialConfig.Value);
                                                             }
                                                             else
                                                             {
+                                                                material.SetColor("_Color", Color.white);
                                                                 ConfigEntry<Color> materialConfig = Config.Bind("C - Material Settings", configName, Color.white, $"Color for material '{PrettifyText(material.name)}' of object '{outfitType}'");
                                                                 materialColorConfigs[key] = materialConfig;
                                                                 material.SetColor("_Color", materialConfig.Value);
                                                             }
-                                                            ++colouringRanTimes;
+                                                            renderer.enabled = false;
+                                                            renderer.enabled = true;
                                                         }
                                                     }
                                                 }
@@ -419,13 +491,14 @@ namespace HaloArmour
                                         }
                                     }
                                 }
+                                obj.SetActive(wasActive);
                             }
                         }
                     }
                 }
+                ++colouringRanTimes;
             }
         }
-
 
         private string GetOutfitType(string objectName)
         {
@@ -440,6 +513,10 @@ namespace HaloArmour
             else if (objectName.ToLower().Contains("undersuit_arms_colourable") || objectName.ToLower().Contains("undersuit_arms_cyborg_colourable") || objectName.ToLower().Contains("bodysuit_arms_colourable"))
             {
                 return "Undersuit Body";
+            }
+            else if (objectName.ToLower().Contains("helmet_spartan") && objectName.ToLower().Contains("_colourable"))
+            {
+                return "Helmet";
             }
             return null;
         }
@@ -457,6 +534,7 @@ namespace HaloArmour
 
             result = result.Replace(" Colourable", ""); // Remove the word "Colourable"
             result = result.Replace(" (Instance)", ""); // Remove the word "Instance"
+            result = result.Trim(); // Remove leading and trailing whitespace characters
 
             return result;
         }
@@ -468,7 +546,6 @@ namespace HaloArmour
         public static Player player;
         public static ActiveHealthControllerClass health;
         public static SkillsClass skills;
-        public static Profile profile;
         public static EFT.Animations.ProceduralWeaponAnimation weapon;
         public static AssetBundle shieldhudBundle;
         public static AssetBundle shieldhudAudioBundle;
@@ -502,7 +579,7 @@ namespace HaloArmour
         public static Image shieldBarHealthPipsImage;
         public static float playerMaxHealth = 0f;
         public static float playerCurrentHealth = 0f;
-        public static int maxShield = HaloArmourRecolour.maxShieldConfig.Value;
+        public static int maxShield = HaloArmour.maxShieldConfig.Value;
         public static int currentShield = maxShield;
         public static int lastShield = maxShield;
         public static bool shieldGotHit = false;
@@ -513,8 +590,8 @@ namespace HaloArmour
         public static RectTransform shieldHudBasePosition { get; private set; }
         public static RectTransform ShieldBarHealthPips { get; private set; }
         public static RectTransform shieldBarEdges { get; private set; }
-        public static float shieldRechargeWaitTime = HaloArmourRecolour.shieldRechargeWaitTimeConfig.Value;
-        public static float shieldRechargeDurationTime = HaloArmourRecolour.shieldRechargeTimeConfig.Value;
+        public static float shieldRechargeWaitTime = HaloArmour.shieldRechargeWaitTimeConfig.Value;
+        public static float shieldRechargeDurationTime = HaloArmour.shieldRechargeTimeConfig.Value;
         public static float userJumpSkill = 0f;
         public static float userEnduranceSkill = 0f;
         public static float userEnduranceRegenerationSkill = 0f;
@@ -527,10 +604,6 @@ namespace HaloArmour
 
         private void Start()
         {
-            // Enable our patches.
-            new ShieldPatch().Enable();
-            new DeadPatch().Enable();
-            new HealPatch().Enable();
             // Create our prefabs from our bundles and shit.
             if (ShieldhudPrefab == null)
             {
@@ -563,7 +636,9 @@ namespace HaloArmour
                     weapon = player.ProceduralWeaponAnimation;
                     if (skills != null)
                     {
-                        if (userJumpSkill == 0f && userEnduranceSkill == 0f && userEnduranceRegenerationSkill == 0f && userSprintSkill == 0f && defaultCharacterSpeed == 0f)
+                        if (skills.StrengthBuffJumpHeightInc != null && skills.EnduranceBuffEnduranceInc != null && skills.EnduranceBuffRestoration != null && skills.StrengthBuffSprintSpeedInc != null 
+                            && skills.StrengthBuffSprintSpeedInc != null && userJumpSkill == 0f && userEnduranceSkill == 0f && userEnduranceRegenerationSkill == 0f && userSprintSkill == 0f 
+                            && defaultCharacterSpeed == 0f)
                         {
                             userJumpSkill = skills.StrengthBuffJumpHeightInc.Value;
                             userEnduranceSkill = skills.EnduranceBuffEnduranceInc.Value;
@@ -584,85 +659,85 @@ namespace HaloArmour
                                 playerMaxHealth = ((HeadMaxHP + ChestMaxHP) * 2f) + ((LeftArmMaxHP + LeftLegMaxHP + RightArmMaxHP + RightLegMaxHP + StomachMaxHP) / 2.5f);
                                 //EFT.UI.ConsoleScreen.LogError($"Max Health: " + playerMaxHealth);
                             }
-                            if (maxShield != HaloArmourRecolour.maxShieldConfig.Value)
+                            if (maxShield != HaloArmour.maxShieldConfig.Value)
                             {
-                                maxShield = HaloArmourRecolour.maxShieldConfig.Value;
+                                maxShield = HaloArmour.maxShieldConfig.Value;
                                 currentShield = maxShield;
                             }
-                            if (shieldRechargeWaitTime != HaloArmourRecolour.shieldRechargeWaitTimeConfig.Value)
+                            if (shieldRechargeWaitTime != HaloArmour.shieldRechargeWaitTimeConfig.Value)
                             {
-                                shieldRechargeWaitTime = HaloArmourRecolour.shieldRechargeWaitTimeConfig.Value;
+                                shieldRechargeWaitTime = HaloArmour.shieldRechargeWaitTimeConfig.Value;
                             }
-                            if (shieldRechargeDurationTime != HaloArmourRecolour.shieldRechargeTimeConfig.Value)
+                            if (shieldRechargeDurationTime != HaloArmour.shieldRechargeTimeConfig.Value)
                             {
-                                shieldRechargeDurationTime = HaloArmourRecolour.shieldRechargeTimeConfig.Value;
+                                shieldRechargeDurationTime = HaloArmour.shieldRechargeTimeConfig.Value;
                             }
                             if (skills != null)
                             {
-                                if (skills.StrengthBuffJumpHeightInc.Value != 1f * HaloArmourRecolour.jumpBuffMultiplierConfig.Value)
+                                if (skills.StrengthBuffJumpHeightInc != null && skills.StrengthBuffJumpHeightInc.Value != 1f * HaloArmour.jumpBuffMultiplierConfig.Value)
                                 {
-                                    skills.StrengthBuffJumpHeightInc.Value = Mathf.Max(userJumpSkill, 1f * HaloArmourRecolour.jumpBuffMultiplierConfig.Value);
+                                    skills.StrengthBuffJumpHeightInc.Value = Mathf.Max(userJumpSkill, 1f * HaloArmour.jumpBuffMultiplierConfig.Value);
                                 }
-                                if (!HaloArmourRecolour.jumpChangesConfig.Value && skills.StrengthBuffJumpHeightInc.Value == 1f * HaloArmourRecolour.jumpBuffMultiplierConfig.Value)
+                                if (skills.StrengthBuffJumpHeightInc != null && !HaloArmour.jumpChangesConfig.Value && skills.StrengthBuffJumpHeightInc.Value == 1f * HaloArmour.jumpBuffMultiplierConfig.Value)
                                 {
                                     skills.StrengthBuffJumpHeightInc.Value = userJumpSkill;
                                 }
-                                if (skills.EnduranceBuffEnduranceInc.Value != 4f * HaloArmourRecolour.staminaBuffMultiplierConfig.Value)
+                                if (skills.EnduranceBuffEnduranceInc != null && skills.EnduranceBuffEnduranceInc.Value != 4f * HaloArmour.staminaBuffMultiplierConfig.Value)
                                 {
-                                    skills.EnduranceBuffEnduranceInc.Value = Mathf.Max(userEnduranceSkill, 4f * HaloArmourRecolour.staminaBuffMultiplierConfig.Value);
+                                    skills.EnduranceBuffEnduranceInc.Value = Mathf.Max(userEnduranceSkill, 4f * HaloArmour.staminaBuffMultiplierConfig.Value);
                                 }
-                                if (!HaloArmourRecolour.staminaChangesConfig.Value && skills.EnduranceBuffEnduranceInc.Value == 4f * HaloArmourRecolour.staminaBuffMultiplierConfig.Value)
+                                if (skills.EnduranceBuffEnduranceInc != null && !HaloArmour.staminaChangesConfig.Value && skills.EnduranceBuffEnduranceInc.Value == 4f * HaloArmour.staminaBuffMultiplierConfig.Value)
                                 {
                                     skills.EnduranceBuffEnduranceInc.Value = userEnduranceSkill;
                                 }
-                                if (skills.EnduranceBuffRestoration.Value != 4f * HaloArmourRecolour.staminaBuffMultiplierConfig.Value)
+                                if (skills.EnduranceBuffRestoration != null &&  skills.EnduranceBuffRestoration.Value != 4f * HaloArmour.staminaBuffMultiplierConfig.Value)
                                 {
-                                    skills.EnduranceBuffRestoration.Value = Mathf.Max(userEnduranceRegenerationSkill, 4f * HaloArmourRecolour.staminaBuffMultiplierConfig.Value);
+                                    skills.EnduranceBuffRestoration.Value = Mathf.Max(userEnduranceRegenerationSkill, 4f * HaloArmour.staminaBuffMultiplierConfig.Value);
                                 }
-                                if (!HaloArmourRecolour.staminaChangesConfig.Value && skills.EnduranceBuffRestoration.Value == 4f * HaloArmourRecolour.staminaBuffMultiplierConfig.Value)
+                                if (skills.EnduranceBuffRestoration != null &&  !HaloArmour.staminaChangesConfig.Value && skills.EnduranceBuffRestoration.Value == 4f * HaloArmour.staminaBuffMultiplierConfig.Value)
                                 {
                                     skills.EnduranceBuffRestoration.Value = userEnduranceRegenerationSkill;
                                 }
-                                if (skills.StrengthBuffSprintSpeedInc.Value != 12f * HaloArmourRecolour.speedBuffMultiplierConfig.Value)
+                                if (skills.StrengthBuffSprintSpeedInc != null &&  skills.StrengthBuffSprintSpeedInc.Value != 12f * HaloArmour.speedBuffMultiplierConfig.Value)
                                 {
-                                    skills.StrengthBuffSprintSpeedInc.Value = Mathf.Max(userSprintSkill, 12f * HaloArmourRecolour.speedBuffMultiplierConfig.Value);
+                                    skills.StrengthBuffSprintSpeedInc.Value = Mathf.Max(userSprintSkill, 12f * HaloArmour.speedBuffMultiplierConfig.Value);
                                 }
-                                if (!HaloArmourRecolour.speedChangesConfig.Value && skills.StrengthBuffSprintSpeedInc.Value == 12f * HaloArmourRecolour.speedBuffMultiplierConfig.Value)
+                                if (skills.StrengthBuffSprintSpeedInc != null &&  !HaloArmour.speedChangesConfig.Value && skills.StrengthBuffSprintSpeedInc.Value == 12f * HaloArmour.speedBuffMultiplierConfig.Value)
                                 {
                                     skills.StrengthBuffSprintSpeedInc.Value = userSprintSkill;
                                 }
                             }
-                            if (weapon != null && HaloArmourRecolour.recoilChangesConfig.Value)
+                            if (weapon != null && HaloArmour.recoilChangesConfig.Value)
                             {
-                                if (weapon.Shootingg.Intensity != HaloArmourRecolour.recoilBuffMultiplierConfig.Value)
+                                if (weapon.Shootingg != null && weapon.Shootingg.Intensity != HaloArmour.recoilBuffMultiplierConfig.Value)
                                 {
-                                    weapon.Shootingg.Intensity = HaloArmourRecolour.recoilBuffMultiplierConfig.Value;
+                                    weapon.Shootingg.Intensity = HaloArmour.recoilBuffMultiplierConfig.Value;
                                 }
-                                if (weapon.Shootingg.Stiffness != HaloArmourRecolour.recoilBuffMultiplierConfig.Value)
+                                if (weapon.Shootingg != null && weapon.Shootingg.Stiffness != HaloArmour.recoilBuffMultiplierConfig.Value)
                                 {
-                                    weapon.Shootingg.Stiffness = HaloArmourRecolour.recoilBuffMultiplierConfig.Value;
+                                    weapon.Shootingg.Stiffness = HaloArmour.recoilBuffMultiplierConfig.Value;
                                 }
-                                if (weapon.Breath.Intensity != HaloArmourRecolour.recoilBuffMultiplierConfig.Value)
+                                if (weapon.Shootingg != null && weapon.Breath.Intensity != HaloArmour.recoilBuffMultiplierConfig.Value)
                                 {
-                                    weapon.Breath.Intensity = HaloArmourRecolour.recoilBuffMultiplierConfig.Value;
+                                    weapon.Breath.Intensity = HaloArmour.recoilBuffMultiplierConfig.Value;
 
                                 }
-                                if (weapon.MotionReact.Intensity != HaloArmourRecolour.recoilBuffMultiplierConfig.Value)
+                                if (weapon.Shootingg != null && weapon.MotionReact.Intensity != HaloArmour.recoilBuffMultiplierConfig.Value)
                                 {
-                                    weapon.MotionReact.Intensity = HaloArmourRecolour.recoilBuffMultiplierConfig.Value;
+                                    weapon.MotionReact.Intensity = HaloArmour.recoilBuffMultiplierConfig.Value;
                                 }
-                                if (weapon.ForceReact.Intensity != HaloArmourRecolour.recoilBuffMultiplierConfig.Value)
+                                if (weapon.Shootingg != null && weapon.ForceReact.Intensity != HaloArmour.recoilBuffMultiplierConfig.Value)
                                 {
-                                    weapon.ForceReact.Intensity = HaloArmourRecolour.recoilBuffMultiplierConfig.Value;
+                                    weapon.ForceReact.Intensity = HaloArmour.recoilBuffMultiplierConfig.Value;
                                 }
                             }
                             if (player.MovementContext != null)
                             {
-                                if (!HaloArmourRecolour.speedChangesConfig.Value && player.MovementContext.CharacterMovementSpeed != 3f * HaloArmourRecolour.speedBuffMultiplierConfig.Value)
+                                if (player.MovementContext != null && !HaloArmour.speedChangesConfig.Value && player.MovementContext.CharacterMovementSpeed != 3f * HaloArmour.speedBuffMultiplierConfig.Value)
                                 {
-                                    player.MovementContext.SetCharacterMovementSpeed(Mathf.Max(defaultCharacterSpeed, 3f * HaloArmourRecolour.speedBuffMultiplierConfig.Value));
+                                    player.MovementContext.SetCharacterMovementSpeed(Mathf.Max(defaultCharacterSpeed, 3f * HaloArmour.speedBuffMultiplierConfig.Value));
                                 }
-                                if (!HaloArmourRecolour.speedChangesConfig.Value && player.MovementContext.CharacterMovementSpeed == 3f * HaloArmourRecolour.speedBuffMultiplierConfig.Value)
+                                if (player.MovementContext != null && !HaloArmour.speedChangesConfig.Value && player.MovementContext.CharacterMovementSpeed == 3f * HaloArmour.speedBuffMultiplierConfig.Value)
                                 {
                                     player.MovementContext.SetCharacterMovementSpeed(defaultCharacterSpeed, false);
                                 }
@@ -671,7 +746,7 @@ namespace HaloArmour
                             {
                                 playerCamera = GameObject.Find("FPS Camera");
                             }
-                            if (HaloArmourRecolour.shieldEnabledConfig.Value && shieldHud == null && playerCamera != null)
+                            if (HaloArmour.shieldEnabledConfig.Value && shieldHud == null && playerCamera != null)
                             {
                                 var shieldHudBase = Instantiate(ShieldhudPrefab, playerCamera.transform.position, playerCamera.transform.rotation);
                                 shieldHud = shieldHudBase as GameObject;
@@ -722,21 +797,21 @@ namespace HaloArmour
                                     shieldBarFillRightRed = shieldBarEdges.Find("ShieldBarFillRightRed").GetComponent<Image>();
                                 }
                             }
-                            if (!HaloArmourRecolour.shieldEnabledConfig.Value && shieldHud != null && playerCamera != null)
+                            if (!HaloArmour.shieldEnabledConfig.Value && shieldHud != null && playerCamera != null)
                             {
                                 if (shieldHud.activeInHierarchy)
                                 {
                                     shieldHud.SetActive(false);
                                 }
                             }
-                            if (HaloArmourRecolour.shieldEnabledConfig.Value && shieldHud != null && playerCamera != null)
+                            if (HaloArmour.shieldEnabledConfig.Value && shieldHud != null && playerCamera != null)
                             {
                                 if (!shieldHud.activeInHierarchy)
                                 {
                                     shieldHud.SetActive(true);
                                 }
                             }
-                            if (HaloArmourRecolour.shieldEnabledConfig.Value && shieldHud != null)
+                            if (HaloArmour.shieldEnabledConfig.Value && shieldHud != null)
                             {
                                 if (shieldGotHit || currentShield != maxShield)
                                 {
@@ -747,40 +822,40 @@ namespace HaloArmour
                                     shieldBarFillLeftRed.fillAmount = shieldRedFillAmount;
                                     shieldBarFillRightRed.fillAmount = shieldRedFillAmount;
                                 }
-                                if (shieldHudBasePosition.position.x != shieldPositionYStart + HaloArmourRecolour.radarOffsetYConfig.Value && shieldHudBasePosition.position.y != shieldPositionXStart + HaloArmourRecolour.radarOffsetXConfig.Value)
+                                if (shieldHudBasePosition.position.x != shieldPositionYStart + HaloArmour.radarOffsetYConfig.Value && shieldHudBasePosition.position.y != shieldPositionXStart + HaloArmour.radarOffsetXConfig.Value)
                                 {
-                                    shieldHudBasePosition.position = new Vector2(shieldPositionYStart + HaloArmourRecolour.shieldOffsetYConfig.Value, shieldPositionXStart + HaloArmourRecolour.shieldOffsetXConfig.Value);
+                                    shieldHudBasePosition.position = new Vector2(shieldPositionYStart + HaloArmour.shieldOffsetYConfig.Value, shieldPositionXStart + HaloArmour.shieldOffsetXConfig.Value);
                                 }
-                                if (shieldHudBasePosition.localScale.y != shieldScaleStart.y * HaloArmourRecolour.shieldScaleOffsetConfig.Value && shieldHudBasePosition.localScale.x != shieldScaleStart.x * HaloArmourRecolour.shieldScaleOffsetConfig.Value)
+                                if (shieldHudBasePosition.localScale.y != shieldScaleStart.y * HaloArmour.shieldScaleOffsetConfig.Value && shieldHudBasePosition.localScale.x != shieldScaleStart.x * HaloArmour.shieldScaleOffsetConfig.Value)
                                 {
-                                    shieldHudBasePosition.localScale = new Vector2(shieldScaleStart.y * HaloArmourRecolour.shieldScaleOffsetConfig.Value, shieldScaleStart.x * HaloArmourRecolour.shieldScaleOffsetConfig.Value);
+                                    shieldHudBasePosition.localScale = new Vector2(shieldScaleStart.y * HaloArmour.shieldScaleOffsetConfig.Value, shieldScaleStart.x * HaloArmour.shieldScaleOffsetConfig.Value);
                                 }
                             }
                             if (health != null)
                             {
-                                if (!HaloArmourRecolour.shieldEnabledConfig.Value)
+                                if (!HaloArmour.shieldEnabledConfig.Value)
                                 {
-                                    if (health.DamageCoeff != HaloArmourRecolour.undersuitArmourReductionConfig.Value && HaloArmourRecolour.undersuitArmourConfig.Value)
+                                    if (health.DamageCoeff != HaloArmour.undersuitArmourReductionConfig.Value && HaloArmour.undersuitArmourConfig.Value)
                                     {
-                                        health.SetDamageCoeff(HaloArmourRecolour.undersuitArmourReductionConfig.Value);
+                                        health.SetDamageCoeff(HaloArmour.undersuitArmourReductionConfig.Value);
                                     }
-                                    if (health.DamageCoeff != 1f && !HaloArmourRecolour.undersuitArmourConfig.Value)
+                                    if (health.DamageCoeff != 1f && !HaloArmour.undersuitArmourConfig.Value)
                                     {
                                         health.SetDamageCoeff(1f);
                                     }
                                 }
-                                if (currentShield == 0 && HaloArmourRecolour.shieldEnabledConfig.Value)
+                                if (currentShield == 0 && HaloArmour.shieldEnabledConfig.Value)
                                 {
-                                    if (health.DamageCoeff != HaloArmourRecolour.undersuitArmourReductionConfig.Value && HaloArmourRecolour.undersuitArmourConfig.Value)
+                                    if (health.DamageCoeff != HaloArmour.undersuitArmourReductionConfig.Value && HaloArmour.undersuitArmourConfig.Value)
                                     {
-                                        health.SetDamageCoeff(HaloArmourRecolour.undersuitArmourReductionConfig.Value);
+                                        health.SetDamageCoeff(HaloArmour.undersuitArmourReductionConfig.Value);
                                     }
-                                    if (health.DamageCoeff != 1f && !HaloArmourRecolour.undersuitArmourConfig.Value)
+                                    if (health.DamageCoeff != 1f && !HaloArmour.undersuitArmourConfig.Value)
                                     {
                                         health.SetDamageCoeff(1f);
                                     }
                                 }
-                                if (health.DamageCoeff != -0f && currentShield >= 1 && HaloArmourRecolour.shieldEnabledConfig.Value)
+                                if (health.DamageCoeff != -0f && currentShield >= 1 && HaloArmour.shieldEnabledConfig.Value)
                                 {
                                     health.SetDamageCoeff(-0f);
                                 }
@@ -954,6 +1029,11 @@ namespace HaloArmour
         public static RectTransform radarHudBlipBasePosition { get; private set; }
         public static RectTransform radarHudBasePosition { get; private set; }
         public static RectTransform radarHudPulse { get; private set; }
+        public static RectTransform radarHudBlip { get; private set; }
+        public static Image blipImage;
+        public static Sprite EnemyBlip;
+        public static Sprite EnemyBlipDown;
+        public static Sprite EnemyBlipUp;
         public static Coroutine pulseCoroutine;
         public static float animationDuration = 1f;
         public static float pauseDuration = 4f;
@@ -1001,7 +1081,7 @@ namespace HaloArmour
 
                 if (playerCamera != null)
                 {
-                    if (HaloArmourRecolour.radarEnabledConfig.Value)
+                    if (HaloArmour.radarEnabledConfig.Value)
                     {
                         if (radarHud == null)
                         {
@@ -1020,13 +1100,13 @@ namespace HaloArmour
                         {
                             radarHud.SetActive(true);
                         }
-                        if (radarHudBasePosition.position.y != radarPositionYStart + HaloArmourRecolour.radarOffsetYConfig.Value || radarHudBasePosition.position.x != radarPositionXStart + HaloArmourRecolour.radarOffsetXConfig.Value)
+                        if (radarHudBasePosition.position.y != radarPositionYStart + HaloArmour.radarOffsetYConfig.Value || radarHudBasePosition.position.x != radarPositionXStart + HaloArmour.radarOffsetXConfig.Value)
                         {
-                            radarHudBasePosition.position = new Vector2(radarPositionYStart + HaloArmourRecolour.radarOffsetYConfig.Value, radarPositionXStart + HaloArmourRecolour.radarOffsetXConfig.Value);
+                            radarHudBasePosition.position = new Vector2(radarPositionYStart + HaloArmour.radarOffsetYConfig.Value, radarPositionXStart + HaloArmour.radarOffsetXConfig.Value);
                         }
-                        if (radarHudBasePosition.localScale.y != radarScaleStart.y * HaloArmourRecolour.radarScaleOffsetConfig.Value && radarHudBasePosition.localScale.x != radarScaleStart.x * HaloArmourRecolour.radarScaleOffsetConfig.Value)
+                        if (radarHudBasePosition.localScale.y != radarScaleStart.y * HaloArmour.radarScaleOffsetConfig.Value && radarHudBasePosition.localScale.x != radarScaleStart.x * HaloArmour.radarScaleOffsetConfig.Value)
                         {
-                            radarHudBasePosition.localScale = new Vector2(radarScaleStart.y * HaloArmourRecolour.radarScaleOffsetConfig.Value, radarScaleStart.x * HaloArmourRecolour.radarScaleOffsetConfig.Value);
+                            radarHudBasePosition.localScale = new Vector2(radarScaleStart.y * HaloArmour.radarScaleOffsetConfig.Value, radarScaleStart.x * HaloArmour.radarScaleOffsetConfig.Value);
                         }
                         UpdateEnemyObjects();
                     }
@@ -1145,6 +1225,9 @@ namespace HaloArmour
                     var radarHudBlipBase = Instantiate(RadarBliphudPrefab, radarHudBlipBasePosition.position, radarHudBlipBasePosition.rotation);
                     radarBlipHud = radarHudBlipBase as GameObject;
                     radarBlipHud.transform.parent = radarHudBlipBasePosition.transform;
+                    EnemyBlip = radarBundle.LoadAsset<Sprite>("EnemyBlip");
+                    EnemyBlipUp = radarBundle.LoadAsset<Sprite>("EnemyBlipUp");
+                    EnemyBlipDown = radarBundle.LoadAsset<Sprite>("EnemyBlipDown");
                     // Add the enemy object and its blip to the dictionary
                     enemyBlips.Add(enemyObject, radarBlipHud);
                     blip = radarBlipHud;
@@ -1152,53 +1235,60 @@ namespace HaloArmour
 
                 if (blip != null)
                 {
-                    // Calculate the normalized distance based on the enemy's position on the Y-axis
-                    float heightDistance = enemyObject.transform.position.y - player.Transform.position.y;
-                    float normalizedDistance = Mathf.InverseLerp(-8f, 8f, heightDistance);
-                    // Map the normalized alpha value to the desired range of alpha values
-                    float alpha = Mathf.Lerp(150f, 255f, normalizedDistance);
-                    RectTransform radarHudBlip = blip.transform.Find("Blip/RadarEnemyBlip") as RectTransform;
-                    Image blipImage = radarHudBlip.GetComponent<Image>();
-                    // Update the alpha value of the blip's image component
-                    Color newColor = blipImage.color;
-                    newColor.a = alpha / 255f; // Adjust the range and values to your liking
-                    blipImage.color = newColor;
+                    // Update the blip's image component based on y distance to enemy.
+                    radarHudBlip = blip.transform.Find("Blip/RadarEnemyBlip") as RectTransform;
+                    blipImage = radarHudBlip.GetComponent<Image>();
+                    float yDifference = enemyObject.transform.position.y - player.Transform.position.y;
+                    float totalThreshold = HaloArmour.playerHeight + HaloArmour.playerHeight / 2f;
+                    if (Mathf.Abs(yDifference) <= totalThreshold)
+                    {
+                        blipImage.sprite = EnemyBlip;
+                    }
+                    else if (yDifference > totalThreshold)
+                    {
+                        blipImage.sprite = EnemyBlipUp;
+                    }
+                    else if (yDifference < -totalThreshold)
+                    {
+                        blipImage.sprite = EnemyBlipDown;
+                    }
+                    blip.transform.parent = radarHudBlipBasePosition.transform;
+                    // Apply the scale to the blip
+
+                    // Apply the rotation of the parent transform
+                    Quaternion parentRotation = radarHudBlipBasePosition.rotation;
+                    Vector3 rotatedDirection = parentRotation * Vector3.forward;
+
+                    // Calculate the angle based on the rotated direction
+                    float angle = Mathf.Atan2(rotatedDirection.x, rotatedDirection.z) * Mathf.Rad2Deg;
+
+                    // Calculate the position based on the angle and distance
+                    float distance = Mathf.Sqrt(x * x + z * z);
+                    // Calculate the offset factor based on the distance
+                    float offsetFactor = Mathf.Clamp(distance / radarRange, 2f, 4f);
+                    float offsetDistance = distance * offsetFactor;
+                    float angleInRadians = Mathf.Atan2(x, z);
+                    Vector2 position = new Vector2(Mathf.Sin(angleInRadians - angle * Mathf.Deg2Rad), Mathf.Cos(angleInRadians - angle * Mathf.Deg2Rad)) * offsetDistance;
+
+                    // Get the scale of the radarHudBlipBasePosition
+                    Vector3 scale = radarHudBlipBasePosition.localScale;
+                    // Multiply the sizeDelta by the scale to account for scaling
+                    Vector2 scaledSizeDelta = radarHudBlipBasePosition.sizeDelta;
+                    scaledSizeDelta.x *= scale.x;
+                    scaledSizeDelta.y *= scale.y;
+                    // Calculate the radius of the circular boundary
+                    float radius = Mathf.Min(scaledSizeDelta.x, scaledSizeDelta.y) * 0.5f;
+                    // Clamp the position within the circular boundary
+                    float distanceFromCenter = position.magnitude;
+                    if (distanceFromCenter > radius)
+                    {
+                        position = position.normalized * radius;
+                    }
+                    // Set the local position of the blip
+                    blip.transform.localPosition = position;
+                    Quaternion reverseRotation = Quaternion.Inverse(radarHudBlipBasePosition.rotation);
+                    blip.transform.localRotation = reverseRotation;
                 }
-
-                blip.transform.parent = radarHudBlipBasePosition.transform;
-                // Apply the scale to the blip
-
-                // Apply the rotation of the parent transform
-                Quaternion parentRotation = radarHudBlipBasePosition.rotation;
-                Vector3 rotatedDirection = parentRotation * Vector3.forward;
-
-                // Calculate the angle based on the rotated direction
-                float angle = Mathf.Atan2(rotatedDirection.x, rotatedDirection.z) * Mathf.Rad2Deg;
-
-                // Calculate the position based on the angle and distance
-                float distance = Mathf.Sqrt(x * x + z * z);
-                // Calculate the offset factor based on the distance
-                float offsetFactor = Mathf.Clamp(distance / radarRange, 2f, 4f);
-                float offsetDistance = distance * offsetFactor;
-                float angleInRadians = Mathf.Atan2(x, z);
-                Vector2 position = new Vector2(Mathf.Sin(angleInRadians - angle * Mathf.Deg2Rad), Mathf.Cos(angleInRadians - angle * Mathf.Deg2Rad)) * offsetDistance;
-
-                // Get the scale of the radarHudBlipBasePosition
-                Vector3 scale = radarHudBlipBasePosition.localScale;
-                // Multiply the sizeDelta by the scale to account for scaling
-                Vector2 scaledSizeDelta = radarHudBlipBasePosition.sizeDelta;
-                scaledSizeDelta.x *= scale.x;
-                scaledSizeDelta.y *= scale.y;
-                // Calculate the radius of the circular boundary
-                float radius = Mathf.Min(scaledSizeDelta.x, scaledSizeDelta.y) * 0.5f;
-                // Clamp the position within the circular boundary
-                float distanceFromCenter = position.magnitude;
-                if (distanceFromCenter > radius)
-                {
-                    position = position.normalized * radius;
-                }
-                // Set the local position of the blip
-                blip.transform.localPosition = position;
             }
             else
             {
@@ -1261,33 +1351,33 @@ namespace HaloArmour
         [PatchPostfix]
         static void PostFix(ref Player __instance, float damage, EBodyPart part, EDamageType type)
         {
-            if (HaloShield.currentShield >= 1 && HaloArmourRecolour.shieldEnabledConfig.Value)
+            if (HaloArmour.patchesEnabled && HaloShield.currentShield >= 1 && HaloArmour.shieldEnabledConfig.Value)
             {
-                float bodyPartMult = 1f;
-                if (__instance.IsYourPlayer && part == EBodyPart.Head)
-                {
-                    bodyPartMult = 1.5f;
-                }
-                if (__instance.IsYourPlayer && (part == EBodyPart.Chest || part == EBodyPart.Stomach))
-                {
-                    bodyPartMult = 1.25f;
-                }
-                if (__instance.IsYourPlayer && (part == EBodyPart.LeftArm || part == EBodyPart.RightArm || part == EBodyPart.LeftLeg || part == EBodyPart.RightLeg || part == EBodyPart.Common))
-                {
-                    bodyPartMult = 1f;
-                }
-                if (__instance.IsYourPlayer && type != EDamageType.Fall)
-                {
-                    HaloShield.shieldGotHit = true;
-                    HaloShield.lastShield = HaloShield.currentShield;
-                    HaloShield.currentShield = Mathf.Max(0, HaloShield.currentShield - Mathf.RoundToInt((damage / 15) * bodyPartMult));
-                }
-                if (__instance.IsYourPlayer && type == EDamageType.Fall)
-                {
-                    HaloShield.shieldGotHit = true;
-                    HaloShield.lastShield = HaloShield.currentShield;
-                    HaloShield.currentShield = 0;
-                }
+                    float bodyPartMult = 1f;
+                    if (__instance.IsYourPlayer && part == EBodyPart.Head)
+                    {
+                        bodyPartMult = 1.5f;
+                    }
+                    if (__instance.IsYourPlayer && (part == EBodyPart.Chest || part == EBodyPart.Stomach))
+                    {
+                        bodyPartMult = 1.25f;
+                    }
+                    if (__instance.IsYourPlayer && (part == EBodyPart.LeftArm || part == EBodyPart.RightArm || part == EBodyPart.LeftLeg || part == EBodyPart.RightLeg || part == EBodyPart.Common))
+                    {
+                        bodyPartMult = 1f;
+                    }
+                    if (__instance.IsYourPlayer && type != EDamageType.Fall)
+                    {
+                        HaloShield.shieldGotHit = true;
+                        HaloShield.lastShield = HaloShield.currentShield;
+                        HaloShield.currentShield = Mathf.Max(0, HaloShield.currentShield - Mathf.RoundToInt((damage / 15) * bodyPartMult));
+                    }
+                    if (__instance.IsYourPlayer && type == EDamageType.Fall)
+                    {
+                        HaloShield.shieldGotHit = true;
+                        HaloShield.lastShield = HaloShield.currentShield;
+                        HaloShield.currentShield = 0;
+                    }
             }
         }
     }
@@ -1298,7 +1388,7 @@ namespace HaloArmour
         [PatchPostfix]
         static void PostFix(ref Player __instance)
         {
-            if (__instance.IsYourPlayer)
+            if (HaloArmour.patchesEnabled && __instance.IsYourPlayer)
             {
                 HaloShield.playerHealthChanged = true;
             }
@@ -1312,9 +1402,22 @@ namespace HaloArmour
         [PatchPostfix]
         static void PostFix(ref Player __instance)
         {
-            if (__instance.IsYourPlayer)
+            if (HaloArmour.patchesEnabled && __instance.IsYourPlayer)
             {
                 HaloShield.DeathHandler(__instance);
+            }
+        }
+    }
+
+    public class DoorKickPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod() => typeof(Door).GetMethod("BreachSuccessRoll", BindingFlags.Instance | BindingFlags.Public);
+        [PatchPostfix]
+        static void PostFix(ref bool __result)
+        {
+            if (HaloArmour.patchesEnabled && HaloArmour.doorKickerEnabledConfig.Value)
+            {
+                __result = true;
             }
         }
     }
