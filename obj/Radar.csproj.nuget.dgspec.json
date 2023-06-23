@@ -1,15 +1,15 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\HaloArmour.csproj": {}
+    "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\Radar.csproj": {}
   },
   "projects": {
-    "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\HaloArmour.csproj": {
+    "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\Radar.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\HaloArmour.csproj",
-        "projectName": "Tyrian-UNSCEquipment",
-        "projectPath": "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\HaloArmour.csproj",
+        "projectUniqueName": "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\Radar.csproj",
+        "projectName": "Tyrian-Radar",
+        "projectPath": "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\Radar.csproj",
         "packagesPath": "C:\\Users\\thebo\\.nuget\\packages\\",
         "outputPath": "C:\\Users\\thebo\\Desktop\\TarkovProjects\\GithubStuff\\Client Mod Stuff\\RadarStandalone\\RadarStandalone\\obj\\",
         "projectStyle": "PackageReference",
