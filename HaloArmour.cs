@@ -49,6 +49,8 @@ namespace HaloArmour
         public static ConfigEntry<bool> doorKickerEnabledConfig;
         public static ConfigEntry<bool> radarEnabledConfig;
         public static ConfigEntry<float> radarScaleOffsetConfig;
+        public static ConfigEntry<float> radarDistanceScaleOffsetConfig;
+        public static ConfigEntry<float> radarHeightThresholdeScaleOffsetConfig;
         public static ConfigEntry<float> radarOffsetYConfig;
         public static ConfigEntry<float> radarOffsetXConfig;
         public static ConfigEntry<float> shieldScaleOffsetConfig;
@@ -107,6 +109,8 @@ namespace HaloArmour
             shieldOffsetXConfig = Config.Bind<float>("A - Shield Settings", "Shield HUD X Position Offset", 0f, new BepInEx.Configuration.ConfigDescription("The X Position Offset for the Shield Hud.", new BepInEx.Configuration.AcceptableValueRange<float>(-2000f, 2000f)));
             radarEnabledConfig = Config.Bind("B - Radar Settings", "Radar Enabled", true, "Adds a Radar feature to the undersuit when you wear it.");
             radarScaleOffsetConfig = Config.Bind<float>("B - Radar Settings", "Radar HUD Scale Offset", 1f, new BepInEx.Configuration.ConfigDescription("The Scale Offset for the Radar Hud.", new BepInEx.Configuration.AcceptableValueRange<float>(0.1f, 2f)));
+            radarDistanceScaleOffsetConfig = Config.Bind<float>("B - Radar Settings", "Radar HUD Blip Disntance Scale Offset", 1f, new BepInEx.Configuration.ConfigDescription("This scales the blips distances from the player, effectively zooming it in and out.", new BepInEx.Configuration.AcceptableValueRange<float>(0.1f, 2f)));
+            radarHeightThresholdeScaleOffsetConfig = Config.Bind<float>("B - Radar Settings", "Radar HUD Blip Height Threshold Offset", 1f, new BepInEx.Configuration.ConfigDescription("This scales the distance threshold for blips turning into up or down arrows depending on enemies height levels.", new BepInEx.Configuration.AcceptableValueRange<float>(1f, 4f)));
             radarOffsetYConfig = Config.Bind<float>("B - Radar Settings", "Radar HUD Y Position Offset", 0f, new BepInEx.Configuration.ConfigDescription("The Y Position Offset for the Radar Hud.", new BepInEx.Configuration.AcceptableValueRange<float>(-2000f, 2000f)));
             radarOffsetXConfig = Config.Bind<float>("B - Radar Settings", "Radar HUD X Position Offset", 0f, new BepInEx.Configuration.ConfigDescription("The X Position Offset for the Radar Hud.", new BepInEx.Configuration.AcceptableValueRange<float>(-2000f, 2000f)));
             shieldRechargeTimeConfig = Config.Bind<float>("A - Shield Settings", "Shield Max Recharge Time", 4f, new ConfigDescription("The amount of time, in seconds, that the shield will take to recharge.", new AcceptableValueRange<float>(0.01f, 60f)));
@@ -954,10 +958,13 @@ namespace HaloArmour
                 }
             }
         }
-        internal static void DeathHandler(Player player)
+        internal static void DeathHandler(Player __instance)
         {
             playerDead = true;
-            shieldBarHealthPipsImage.sprite = ShieldBarHealth10Sprite;
+            if (shieldHud != null && shieldBarHealthPipsImage != null)
+            {
+                shieldBarHealthPipsImage.sprite = ShieldBarHealth10Sprite;
+            }
         }
 
         private IEnumerator ShieldFlash()
@@ -1239,7 +1246,7 @@ namespace HaloArmour
                     radarHudBlip = blip.transform.Find("Blip/RadarEnemyBlip") as RectTransform;
                     blipImage = radarHudBlip.GetComponent<Image>();
                     float yDifference = enemyObject.transform.position.y - player.Transform.position.y;
-                    float totalThreshold = HaloArmour.playerHeight + HaloArmour.playerHeight / 2f;
+                    float totalThreshold = (HaloArmour.playerHeight + HaloArmour.playerHeight / 2f) * HaloArmour.radarHeightThresholdeScaleOffsetConfig.Value;
                     if (Mathf.Abs(yDifference) <= totalThreshold)
                     {
                         blipImage.sprite = EnemyBlip;
@@ -1266,7 +1273,7 @@ namespace HaloArmour
                     float distance = Mathf.Sqrt(x * x + z * z);
                     // Calculate the offset factor based on the distance
                     float offsetFactor = Mathf.Clamp(distance / radarRange, 2f, 4f);
-                    float offsetDistance = distance * offsetFactor;
+                    float offsetDistance = (distance * offsetFactor) * HaloArmour.radarDistanceScaleOffsetConfig.Value;
                     float angleInRadians = Mathf.Atan2(x, z);
                     Vector2 position = new Vector2(Mathf.Sin(angleInRadians - angle * Mathf.Deg2Rad), Mathf.Cos(angleInRadians - angle * Mathf.Deg2Rad)) * offsetDistance;
 
